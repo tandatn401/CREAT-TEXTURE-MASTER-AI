@@ -1,0 +1,40 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --color-hardware-bg: #121214;
+  --color-hardware-card: #1c1c1f;
+  --color-hardware-border: #2d2d33;
+  --color-hardware-accent: #3b82f6;
+  --color-hardware-text: #e4e4e7;
+  --color-hardware-muted: #71717a;
+}
+
+@layer base {
+  body {
+    @apply bg-hardware-bg text-hardware-text font-sans antialiased;
+  }
+}
+
+.hardware-panel {
+  @apply bg-hardware-card border border-hardware-border rounded-xl shadow-2xl;
+}
+
+.hardware-input {
+  @apply bg-hardware-bg border border-hardware-border rounded px-3 py-1.5 focus:outline-none focus:border-hardware-accent transition-colors;
+}
+
+.hardware-button {
+  @apply px-4 py-2 bg-hardware-accent hover:bg-blue-600 text-white rounded-lg font-medium transition-all active:scale-95 disabled:opacity-50 disabled:pointer-events-none;
+}
+
+.hardware-slider {
+  @apply w-full h-1.5 bg-hardware-border rounded-lg appearance-none cursor-pointer accent-hardware-accent;
+}
+
+.hardware-label {
+  @apply text-[10px] uppercase tracking-wider font-mono text-hardware-muted mb-1 block;
+}
