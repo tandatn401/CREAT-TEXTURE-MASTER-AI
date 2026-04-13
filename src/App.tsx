@@ -99,7 +99,7 @@ export default function App() {
   const [textureRotation, setTextureRotation] = useState(0);
   const [autoRotate, setAutoRotate] = useState(true);
   const [show3D, setShow3D] = useState(true);
-  const [viewMode, setViewMode] = useState<ViewMode>('Full PBR');
+  const [viewMode, setViewMode] = useState<MapType | 'Full PBR'>('Full PBR');
   const [lightboxMap, setLightboxMap] = useState<MapType | null>(null);
   const [processingMaps, setProcessingMaps] = useState<Set<MapType>>(new Set());
   
@@ -129,6 +129,31 @@ export default function App() {
     'Self-Illumination': '',
     Cutout: '',
   });
+
+  const memoizedMaps = React.useMemo(() => ({
+    albedo: previews.Albedo || baseImage || null,
+    normal: previews.Normal || null,
+    roughness: previews.Roughness || null,
+    displacement: previews.Displacement || null,
+    bump: previews.Bump || null,
+    ao: previews.AO || null,
+    glossiness: previews.Glossiness || null,
+    reflections: previews.Reflections || null,
+    emissive: previews['Self-Illumination'] || null,
+    cutout: previews.Cutout || null
+  }), [
+    previews.Albedo, 
+    baseImage,
+    previews.Normal, 
+    previews.Roughness, 
+    previews.Displacement, 
+    previews.Bump, 
+    previews.AO, 
+    previews.Glossiness, 
+    previews.Reflections, 
+    previews['Self-Illumination'], 
+    previews.Cutout
+  ]);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -729,8 +754,14 @@ export default function App() {
                       : 'bg-hardware-bg border-hardware-border text-hardware-muted hover:border-hardware-muted'
                   }`}
                 >
-                  <span>{type}</span>
-                  {activeMaps.includes(type) ? <CheckCircle2 size={12} className="glow-text" /> : <div className="w-3 h-3 rounded-full border border-hardware-muted" />}
+                  <span className={activeMaps.includes(type) ? 'glow-text' : ''}>{type}</span>
+                  {activeMaps.includes(type) ? (
+                    <div className="w-3.5 h-3.5 rounded-full bg-hardware-accent flex items-center justify-center glow-accent">
+                      <CheckCircle2 size={10} className="text-white" />
+                    </div>
+                  ) : (
+                    <div className="w-3.5 h-3.5 rounded-full border border-hardware-muted" />
+                  )}
                 </button>
               ))}
             </div>
@@ -762,7 +793,7 @@ export default function App() {
                 <div className="flex items-center gap-4">
                   <select 
                     value={viewMode}
-                    onChange={(e) => setViewMode(e.target.value as ViewMode)}
+                    onChange={(e) => setViewMode(e.target.value as any)}
                     className="bg-hardware-bg border border-hardware-border rounded px-2 py-1 text-[10px] font-mono outline-none focus:border-hardware-accent text-hardware-text"
                   >
                     <option value="Full PBR">Full PBR</option>
@@ -770,6 +801,12 @@ export default function App() {
                     <option value="Normal">Normal Only</option>
                     <option value="Roughness">Roughness Only</option>
                     <option value="Displacement">Displacement Only</option>
+                    <option value="Bump">Bump Only</option>
+                    <option value="AO">AO Only</option>
+                    <option value="Glossiness">Glossiness Only</option>
+                    <option value="Reflections">Reflections Only</option>
+                    <option value="Self-Illumination">Emissive Only</option>
+                    <option value="Cutout">Cutout Only</option>
                   </select>
 
                   <div className="flex items-center bg-hardware-bg border border-hardware-border rounded p-1 gap-1">
@@ -806,12 +843,7 @@ export default function App() {
               <div className="flex-1 flex gap-4 min-h-0">
                 <div className="flex-1 relative group">
                   <Preview3D 
-                    maps={{
-                      albedo: previews.Albedo || null,
-                      normal: previews.Normal || null,
-                      roughness: previews.Roughness || null,
-                      displacement: previews.Displacement || null
-                    }}
+                    maps={memoizedMaps}
                     geometryType={previewGeometry}
                     tiling={textureTiling}
                     rotation={textureRotation}
@@ -914,21 +946,19 @@ export default function App() {
                   key={type} 
                   className={`hardware-panel flex flex-col overflow-hidden transition-all cursor-pointer group/panel ${
                     viewMode === type 
-                      ? 'ring-2 ring-hardware-accent border-hardware-accent glow-accent' 
-                      : 'border-hardware-accent/40 shadow-[0_0_10px_rgba(var(--hardware-accent-rgb),0.1)]'
+                      ? 'ring-2 ring-hardware-accent !border-hardware-accent glow-accent scale-[1.02] z-10' 
+                      : '!border-hardware-accent/60 shadow-[0_0_15px_rgba(34,197,94,0.15)]'
                   }`}
                   onClick={() => {
-                    if (['Albedo', 'Normal', 'Roughness', 'Displacement'].includes(type)) {
-                      setViewMode(type as ViewMode);
-                      if (!show3D) setShow3D(true);
-                    }
+                    setViewMode(type);
+                    if (!show3D) setShow3D(true);
                   }}
                 >
-                  <div className={`px-3 py-2 border-b border-hardware-border flex items-center justify-between bg-hardware-card/80 ${viewMode === type ? 'bg-hardware-accent/5' : ''}`}>
+                  <div className={`px-3 py-2 border-b border-hardware-border flex items-center justify-between bg-hardware-card/80 ${viewMode === type ? 'bg-hardware-accent/10' : ''}`}>
                     <div className="flex items-center gap-2">
                       <span 
                         className={`text-[10px] font-bold uppercase tracking-widest hover:underline cursor-zoom-in ${
-                          viewMode === type ? 'text-hardware-accent glow-text' : 'text-hardware-accent/80'
+                          activeMaps.includes(type) ? 'text-hardware-accent glow-text' : 'text-hardware-muted'
                         }`}
                         onClick={(e) => {
                           e.stopPropagation();

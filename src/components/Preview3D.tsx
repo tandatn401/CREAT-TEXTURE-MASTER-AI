@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
-export type ViewMode = 'Full PBR' | 'Albedo' | 'Normal' | 'Roughness' | 'Displacement';
+export type ViewMode = 'Full PBR' | 'Albedo' | 'Normal' | 'Roughness' | 'Displacement' | 'Bump' | 'AO' | 'Glossiness' | 'Reflections' | 'Self-Illumination' | 'Cutout';
 
 interface Preview3DProps {
   maps: {
@@ -10,6 +10,12 @@ interface Preview3DProps {
     normal: string | null;
     roughness: string | null;
     displacement: string | null;
+    bump: string | null;
+    ao: string | null;
+    glossiness: string | null;
+    reflections: string | null;
+    emissive: string | null;
+    cutout: string | null;
   };
   geometryType: 'Cube' | 'Sphere' | 'Cylinder' | 'Plane';
   tiling: number;
@@ -81,6 +87,8 @@ const Preview3D: React.FC<Preview3DProps> = ({
       roughness: 1,
       metalness: 0,
       color: 0xffffff,
+      side: THREE.DoubleSide,
+      alphaTest: 0.1,
     });
 
     // Geometry
@@ -162,12 +170,17 @@ const Preview3D: React.FC<Preview3DProps> = ({
     if (!sceneRef.current) return;
     const { material } = sceneRef.current;
     const loader = new THREE.TextureLoader();
+    let isCurrent = true;
 
     setStatus('Updating Textures...');
 
     const updateTexture = (url: string | null, mapKey: keyof THREE.MeshStandardMaterial) => {
       if (url) {
         loader.load(url, (texture) => {
+          if (!isCurrent) {
+            texture.dispose();
+            return;
+          }
           texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
           texture.repeat.set(tiling, tiling);
           texture.rotation = (rotation * Math.PI) / 180;
@@ -175,16 +188,23 @@ const Preview3D: React.FC<Preview3DProps> = ({
           texture.anisotropy = sceneRef.current?.renderer.capabilities.getMaxAnisotropy() || 1;
           texture.needsUpdate = true;
           
+          const oldTexture = (material as any)[mapKey];
+          if (oldTexture && oldTexture.isTexture) {
+            oldTexture.dispose();
+          }
+
           (material as any)[mapKey] = texture;
           material.needsUpdate = true;
           setStatus('Textures Loaded');
         }, undefined, (err) => {
+          if (!isCurrent) return;
           console.error(`Error loading texture for ${mapKey}:`, err);
           setStatus(`Error: ${mapKey} failed`);
         });
       } else {
-        if ((material as any)[mapKey]) {
-          (material as any)[mapKey].dispose();
+        const oldTexture = (material as any)[mapKey];
+        if (oldTexture && oldTexture.isTexture) {
+          oldTexture.dispose();
         }
         (material as any)[mapKey] = null;
         material.needsUpdate = true;
@@ -196,9 +216,15 @@ const Preview3D: React.FC<Preview3DProps> = ({
     material.normalMap = null;
     material.roughnessMap = null;
     material.displacementMap = null;
+    material.aoMap = null;
+    material.emissiveMap = null;
+    material.alphaMap = null;
+    material.transparent = false;
     material.roughness = 1;
     material.metalness = 0;
     material.displacementScale = 0;
+    material.emissiveIntensity = 1.0;
+    material.emissive.setHex(0x000000);
     material.color.setHex(0xffffff);
 
     if (viewMode === 'Full PBR') {
@@ -206,19 +232,50 @@ const Preview3D: React.FC<Preview3DProps> = ({
       updateTexture(maps.normal, 'normalMap');
       updateTexture(maps.roughness, 'roughnessMap');
       updateTexture(maps.displacement, 'displacementMap');
+      updateTexture(maps.ao, 'aoMap');
+      updateTexture(maps.emissive, 'emissiveMap');
+      if (maps.emissive) {
+        material.emissive.setHex(0xffffff);
+        material.emissiveIntensity = 1.0;
+      }
+      if (maps.cutout) {
+        updateTexture(maps.cutout, 'alphaMap');
+        material.transparent = true;
+      }
       material.displacementScale = 0.2;
       material.displacementBias = -0.1;
-    } else if (viewMode === 'Albedo') {
-      updateTexture(maps.albedo, 'map');
-    } else if (viewMode === 'Normal') {
-      updateTexture(maps.normal, 'map');
-    } else if (viewMode === 'Roughness') {
-      updateTexture(maps.roughness, 'map');
-    } else if (viewMode === 'Displacement') {
-      updateTexture(maps.displacement, 'map');
+    } else {
+      // Isolated View Modes
+      material.roughness = 1.0;
+      material.metalness = 0.0;
+      
+      switch (viewMode) {
+        case 'Albedo': updateTexture(maps.albedo, 'map'); break;
+        case 'Normal': updateTexture(maps.normal, 'map'); break;
+        case 'Roughness': updateTexture(maps.roughness, 'map'); break;
+        case 'Displacement': updateTexture(maps.displacement, 'map'); break;
+        case 'Bump': updateTexture(maps.bump, 'map'); break;
+        case 'AO': updateTexture(maps.ao, 'map'); break;
+        case 'Glossiness': updateTexture(maps.glossiness, 'map'); break;
+        case 'Reflections': updateTexture(maps.reflections, 'map'); break;
+        case 'Self-Illumination': 
+          updateTexture(maps.emissive, 'map');
+          material.color.setHex(0x000000);
+          updateTexture(maps.emissive, 'emissiveMap');
+          material.emissive.setHex(0xffffff);
+          break;
+        case 'Cutout': 
+          updateTexture(maps.cutout, 'map');
+          material.transparent = true;
+          break;
+      }
     }
 
     material.needsUpdate = true;
+
+    return () => {
+      isCurrent = false;
+    };
   }, [maps, tiling, rotation, viewMode]);
 
   // Update Camera Zoom
