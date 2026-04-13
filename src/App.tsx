@@ -14,11 +14,21 @@ import {
   ChevronRight,
   Info,
   CheckCircle2,
-  XCircle
+  XCircle,
+  Box,
+  Circle,
+  Cylinder,
+  Square,
+  Maximize2,
+  RotateCw,
+  ZoomIn,
+  Sun
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
+import Preview3D, { ViewMode } from './components/Preview3D';
+import MapLightbox from './components/MapLightbox';
 import { 
   generateNormalMap, 
   generateRoughnessMap, 
@@ -39,7 +49,7 @@ import {
 } from './lib/textureUtils';
 import { GoogleGenAI, Type } from "@google/genai";
 
-type MapType = 'Normal' | 'Roughness' | 'Displacement' | 'Bump' | 'AO' | 'Glossiness' | 'Reflections' | 'Self-Illumination' | 'Cutout';
+type MapType = 'Albedo' | 'Normal' | 'Roughness' | 'Displacement' | 'Bump' | 'AO' | 'Glossiness' | 'Reflections' | 'Self-Illumination' | 'Cutout';
 
 interface MapConfig {
   type: MapType;
@@ -82,6 +92,17 @@ export default function App() {
   const [tiledPreview, setTiledPreview] = useState<string | null>(null);
   const [showTiledPreview, setShowTiledPreview] = useState(false);
   
+  // 3D Preview Settings
+  const [previewGeometry, setPreviewGeometry] = useState<'Cube' | 'Sphere' | 'Cylinder' | 'Plane'>('Sphere');
+  const [cameraZoom, setCameraZoom] = useState(1);
+  const [textureTiling, setTextureTiling] = useState(1);
+  const [textureRotation, setTextureRotation] = useState(0);
+  const [autoRotate, setAutoRotate] = useState(true);
+  const [show3D, setShow3D] = useState(true);
+  const [viewMode, setViewMode] = useState<ViewMode>('Full PBR');
+  const [lightboxMap, setLightboxMap] = useState<MapType | null>(null);
+  const [processingMaps, setProcessingMaps] = useState<Set<MapType>>(new Set());
+  
   const [configs, setConfigs] = useState<Record<MapType, MapConfig>>({
     Normal: { type: 'Normal', intensity: 50, contrast: 0, blur: 0, invert: false, enabled: true, aiBoost: false },
     Roughness: { type: 'Roughness', intensity: 50, contrast: 20, blur: 0, invert: true, enabled: true, aiBoost: false },
@@ -97,6 +118,7 @@ export default function App() {
   const [activeMaps, setActiveMaps] = useState<MapType[]>(['Normal', 'Roughness', 'Displacement', 'Bump']);
 
   const [previews, setPreviews] = useState<Record<MapType, string>>({
+    Albedo: '',
     Normal: '',
     Roughness: '',
     Displacement: '',
@@ -181,117 +203,132 @@ export default function App() {
     }
   };
 
+  const processSingleMap = useCallback(async (type: MapType, currentBaseImage: string) => {
+    if (!currentBaseImage) return;
+    setProcessingMaps(prev => new Set(prev).add(type));
+
+    try {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.src = currentBaseImage;
+      
+      await new Promise((resolve) => {
+        img.onload = resolve;
+      });
+
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      ctx.drawImage(img, 0, 0);
+
+      const workingCanvas = isSeamless ? generateSeamless(canvas) : canvas;
+      const pxPerMm = workingCanvas.width / tileWidth;
+      const groutWidthPx = groutWidth * pxPerMm;
+
+      let resultCanvas: HTMLCanvasElement;
+
+      switch (type) {
+        case 'Albedo':
+          resultCanvas = groutEnabled 
+            ? applyGrout(workingCanvas, groutWidthPx, groutColor, 'Albedo')
+            : workingCanvas;
+          break;
+        case 'Normal':
+          resultCanvas = generateNormalMap(workingCanvas, configs.Normal.intensity / 10);
+          if (groutEnabled) {
+            resultCanvas = applyGrout(resultCanvas, groutWidthPx, 'rgb(128,128,255)', 'Normal', { depth: groutDepth, sharpness: groutSharpness });
+          }
+          if (normalStandard === 'DirectX') {
+            resultCanvas = invertNormalGreen(resultCanvas);
+          }
+          if (configs.Normal.aiBoost) {
+            resultCanvas = sharpenCanvas(resultCanvas, 40);
+          }
+          break;
+        case 'Roughness':
+          resultCanvas = generateRoughnessMap(workingCanvas, configs.Roughness);
+          if (groutEnabled) {
+            resultCanvas = applyGrout(resultCanvas, groutWidthPx, '#ffffff', 'Roughness', { matteGrout });
+          }
+          if (configs.Roughness.aiBoost) {
+            resultCanvas = sharpenCanvas(resultCanvas, 30);
+          }
+          break;
+        case 'Displacement':
+          resultCanvas = generateDisplacementMap(workingCanvas, configs.Displacement);
+          if (groutEnabled) {
+            resultCanvas = applyGrout(resultCanvas, groutWidthPx, '#000000', 'Displacement', { depth: groutDepth, sharpness: groutSharpness });
+          }
+          if (configs.Displacement.aiBoost) {
+            resultCanvas = sharpenCanvas(resultCanvas, 50);
+          }
+          break;
+        case 'Bump':
+          resultCanvas = generateBumpMap(workingCanvas, configs.Bump);
+          if (groutEnabled) {
+            resultCanvas = applyGrout(resultCanvas, groutWidthPx, '#000000', 'Bump', { depth: groutDepth, sharpness: groutSharpness });
+          }
+          break;
+        case 'AO':
+          resultCanvas = generateAOMap(workingCanvas, configs.AO.intensity);
+          if (groutEnabled) {
+            resultCanvas = applyGrout(resultCanvas, groutWidthPx, '#000000', 'AO', { depth: groutDepth, sharpness: groutSharpness });
+          }
+          break;
+        case 'Glossiness':
+          resultCanvas = generateGlossinessMap(workingCanvas, configs.Glossiness);
+          if (groutEnabled) {
+            resultCanvas = applyGrout(resultCanvas, groutWidthPx, '#000000', 'Roughness', { matteGrout: true });
+          }
+          break;
+        case 'Reflections':
+          resultCanvas = generateReflectionsMap(workingCanvas, configs.Reflections);
+          if (groutEnabled) {
+            resultCanvas = applyGrout(resultCanvas, groutWidthPx, '#000000', 'Displacement', { depth: groutDepth, sharpness: groutSharpness });
+          }
+          break;
+        case 'Self-Illumination':
+          resultCanvas = generateEmissiveMap(workingCanvas, configs['Self-Illumination']);
+          break;
+        case 'Cutout':
+          resultCanvas = generateCutoutMap(workingCanvas, configs.Cutout);
+          break;
+        default:
+          return;
+      }
+
+      const dataUrl = resultCanvas.toDataURL('image/png');
+      setPreviews(prev => ({ ...prev, [type]: dataUrl }));
+
+      // If Albedo was updated, update Tiled Preview too
+      if (type === 'Albedo') {
+        const tiled = generateTiledPreview(resultCanvas, previewGrid);
+        setTiledPreview(tiled.toDataURL('image/png'));
+      }
+
+    } catch (error) {
+      console.error(`Error processing ${type} map:`, error);
+    } finally {
+      setProcessingMaps(prev => {
+        const next = new Set(prev);
+        next.delete(type);
+        return next;
+      });
+    }
+  }, [configs, isSeamless, normalStandard, groutEnabled, groutWidth, groutDepth, groutColor, matteGrout, previewGrid, tileWidth, tileHeight]);
+
   const processMaps = useCallback(async () => {
     if (!baseImage) return;
     setIsProcessing(true);
-
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.src = baseImage;
     
-    await new Promise((resolve) => {
-      img.onload = resolve;
-    });
-
-    const canvas = document.createElement('canvas');
-    canvas.width = img.width;
-    canvas.height = img.height;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    ctx.drawImage(img, 0, 0);
-
-    const workingCanvas = isSeamless ? generateSeamless(canvas) : canvas;
+    const mapsToProcess: MapType[] = ['Albedo', 'Normal', 'Roughness', 'Displacement', 'Bump', 'AO', ...activeMaps.filter(m => !['Normal', 'Roughness', 'Displacement', 'Bump', 'AO'].includes(m))];
     
-    // Calculate grout width in pixels based on real-world dimensions
-    // Ratio = Pixel Width / Tile Width (mm)
-    const pxPerMm = workingCanvas.width / tileWidth;
-    const groutWidthPx = groutWidth * pxPerMm;
-
-    // Apply Grout to Albedo for preview if needed
-    const albedoWithGrout = groutEnabled 
-      ? applyGrout(workingCanvas, groutWidthPx, groutColor, 'Albedo')
-      : workingCanvas;
-
-    const newPreviews: Record<MapType, string> = { ...previews };
-
-    // Generate Normal
-    let normalCanvas = generateNormalMap(workingCanvas, configs.Normal.intensity / 10);
-    if (groutEnabled) {
-      normalCanvas = applyGrout(normalCanvas, groutWidthPx, 'rgb(128,128,255)', 'Normal', { depth: groutDepth, sharpness: groutSharpness });
-    }
-    if (normalStandard === 'DirectX') {
-      normalCanvas = invertNormalGreen(normalCanvas);
-    }
-    if (configs.Normal.aiBoost) {
-      normalCanvas = sharpenCanvas(normalCanvas, 40);
-    }
-    newPreviews.Normal = normalCanvas.toDataURL('image/png');
-
-    // Generate Roughness
-    let roughnessCanvas = generateRoughnessMap(workingCanvas, configs.Roughness);
-    if (groutEnabled) {
-      roughnessCanvas = applyGrout(roughnessCanvas, groutWidthPx, '#ffffff', 'Roughness', { matteGrout });
-    }
-    if (configs.Roughness.aiBoost) {
-      roughnessCanvas = sharpenCanvas(roughnessCanvas, 30);
-    }
-    newPreviews.Roughness = roughnessCanvas.toDataURL('image/png');
-
-    // Generate Displacement
-    let displacementCanvas = generateDisplacementMap(workingCanvas, configs.Displacement);
-    if (groutEnabled) {
-      displacementCanvas = applyGrout(displacementCanvas, groutWidthPx, '#000000', 'Displacement', { depth: groutDepth, sharpness: groutSharpness });
-    }
-    if (configs.Displacement.aiBoost) {
-      displacementCanvas = sharpenCanvas(displacementCanvas, 50);
-    }
-    newPreviews.Displacement = displacementCanvas.toDataURL('image/png');
-
-    // Generate Bump
-    let bumpCanvas = generateBumpMap(workingCanvas, configs.Bump);
-    if (groutEnabled) {
-      bumpCanvas = applyGrout(bumpCanvas, groutWidthPx, '#000000', 'Bump', { depth: groutDepth, sharpness: groutSharpness });
-    }
-    newPreviews.Bump = bumpCanvas.toDataURL('image/png');
-
-    // Generate AO
-    let aoCanvas = generateAOMap(workingCanvas, configs.AO.intensity);
-    if (groutEnabled) {
-      aoCanvas = applyGrout(aoCanvas, groutWidthPx, '#000000', 'AO', { depth: groutDepth, sharpness: groutSharpness });
-    }
-    newPreviews.AO = aoCanvas.toDataURL('image/png');
-
-    // Generate Optional Maps if active
-    if (activeMaps.includes('Glossiness')) {
-      let glossCanvas = generateGlossinessMap(workingCanvas, configs.Glossiness);
-      if (groutEnabled) {
-        glossCanvas = applyGrout(glossCanvas, groutWidthPx, '#000000', 'Roughness', { matteGrout: true }); // Glossiness grout is black (matte)
-      }
-      newPreviews.Glossiness = glossCanvas.toDataURL('image/png');
-    }
-    if (activeMaps.includes('Reflections')) {
-      let reflectionsCanvas = generateReflectionsMap(workingCanvas, configs.Reflections);
-      if (groutEnabled) {
-        reflectionsCanvas = applyGrout(reflectionsCanvas, groutWidthPx, '#000000', 'Displacement', { depth: groutDepth, sharpness: groutSharpness });
-      }
-      newPreviews.Reflections = reflectionsCanvas.toDataURL('image/png');
-    }
-    if (activeMaps.includes('Self-Illumination')) {
-      const emissiveCanvas = generateEmissiveMap(workingCanvas, configs['Self-Illumination']);
-      newPreviews['Self-Illumination'] = emissiveCanvas.toDataURL('image/png');
-    }
-    if (activeMaps.includes('Cutout')) {
-      const cutoutCanvas = generateCutoutMap(workingCanvas, configs.Cutout);
-      newPreviews.Cutout = cutoutCanvas.toDataURL('image/png');
-    }
-
-    // Generate Tiled Preview
-    const tiled = generateTiledPreview(albedoWithGrout, previewGrid);
-    setTiledPreview(tiled.toDataURL('image/png'));
-
-    setPreviews(newPreviews);
+    await Promise.all(mapsToProcess.map(type => processSingleMap(type, baseImage)));
+    
     setIsProcessing(false);
-  }, [baseImage, configs, isSeamless, normalStandard, groutEnabled, groutWidth, groutDepth, groutColor, matteGrout, previewGrid]);
+  }, [baseImage, activeMaps, processSingleMap]);
 
   useEffect(() => {
     if (baseImage) {
@@ -381,12 +418,29 @@ export default function App() {
     setTileWidth(600);
     setTileHeight(600);
     setPreviewGrid(2);
+    setPreviewGeometry('Sphere');
+    setCameraZoom(1);
+    setTextureTiling(1);
+    setTextureRotation(0);
+    setAutoRotate(true);
+    setShow3D(true);
+    setViewMode('Full PBR');
+    setLightboxMap(null);
   };
 
   const toggleMap = (type: MapType) => {
-    setActiveMaps(prev => 
-      prev.includes(type) ? prev.filter(t => t !== type) : [...prev, type]
-    );
+    setActiveMaps(prev => {
+      const isAdding = !prev.includes(type);
+      const next = isAdding ? [...prev, type] : prev.filter(t => t !== type);
+      
+      if (isAdding && baseImage) {
+        processSingleMap(type, baseImage);
+      } else if (!isAdding) {
+        setPreviews(p => ({ ...p, [type]: '' }));
+      }
+      
+      return next;
+    });
   };
 
   return (
@@ -427,6 +481,16 @@ export default function App() {
                 />
               </button>
             </div>
+            <button 
+              onClick={() => setShow3D(!show3D)}
+              className={`text-[10px] font-mono px-3 py-1 rounded border transition-all ${
+                show3D 
+                  ? 'bg-hardware-accent/20 text-hardware-accent border-hardware-accent glow-accent glow-text font-bold' 
+                  : 'text-hardware-muted border-hardware-border hover:text-hardware-text'
+              }`}
+            >
+              {show3D ? '3D VIEW ON' : '3D VIEW OFF'}
+            </button>
             <button 
               onClick={resetConfigs}
               className="text-[10px] font-mono text-hardware-muted hover:text-hardware-text uppercase tracking-wider px-2"
@@ -530,12 +594,12 @@ export default function App() {
           <div className="hardware-panel p-4 flex-1 overflow-y-auto">
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
-                <Settings2 className="text-hardware-muted w-3.5 h-3.5" />
-                <h3 className="text-[10px] font-bold uppercase tracking-wider">Grout Settings</h3>
+                <Settings2 className={`w-3.5 h-3.5 ${groutEnabled ? 'text-hardware-accent glow-text' : 'text-hardware-muted'}`} />
+                <h3 className={`text-[10px] font-bold uppercase tracking-wider ${groutEnabled ? 'text-hardware-accent glow-text' : ''}`}>Grout Settings</h3>
               </div>
               <button 
                 onClick={() => setGroutEnabled(!groutEnabled)}
-                className={`w-7 h-3.5 rounded-full transition-colors relative ${groutEnabled ? 'bg-hardware-accent' : 'bg-hardware-border'}`}
+                className={`w-7 h-3.5 rounded-full transition-colors relative ${groutEnabled ? 'bg-hardware-accent glow-accent' : 'bg-hardware-border'}`}
               >
                 <motion.div 
                   animate={{ x: groutEnabled ? 15 : 2 }}
@@ -661,12 +725,12 @@ export default function App() {
                   onClick={() => toggleMap(type)}
                   className={`flex items-center justify-between px-3 py-2 rounded border text-[11px] transition-all ${
                     activeMaps.includes(type) 
-                      ? 'bg-hardware-accent/10 border-hardware-accent text-hardware-accent' 
+                      ? 'bg-hardware-accent/20 border-hardware-accent text-hardware-accent glow-accent glow-text font-bold' 
                       : 'bg-hardware-bg border-hardware-border text-hardware-muted hover:border-hardware-muted'
                   }`}
                 >
                   <span>{type}</span>
-                  {activeMaps.includes(type) ? <CheckCircle2 size={12} /> : <div className="w-3 h-3 rounded-full border border-hardware-muted" />}
+                  {activeMaps.includes(type) ? <CheckCircle2 size={12} className="glow-text" /> : <div className="w-3 h-3 rounded-full border border-hardware-muted" />}
                 </button>
               ))}
             </div>
@@ -686,8 +750,155 @@ export default function App() {
         </div>
 
         {/* Main Grid: All Maps */}
-        <div className="flex-1 overflow-y-auto pr-2">
-          {!baseImage ? (
+        <div className="flex-1 flex flex-col gap-4 overflow-hidden pr-2">
+          {baseImage && show3D && (
+            <div className="hardware-panel p-4 flex flex-col gap-4 h-[500px] shrink-0">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Maximize2 size={14} className="text-hardware-accent" />
+                  <h3 className="text-[10px] font-bold uppercase tracking-wider">3D Geometry Preview</h3>
+                </div>
+                
+                <div className="flex items-center gap-4">
+                  <select 
+                    value={viewMode}
+                    onChange={(e) => setViewMode(e.target.value as ViewMode)}
+                    className="bg-hardware-bg border border-hardware-border rounded px-2 py-1 text-[10px] font-mono outline-none focus:border-hardware-accent text-hardware-text"
+                  >
+                    <option value="Full PBR">Full PBR</option>
+                    <option value="Albedo">Albedo Only</option>
+                    <option value="Normal">Normal Only</option>
+                    <option value="Roughness">Roughness Only</option>
+                    <option value="Displacement">Displacement Only</option>
+                  </select>
+
+                  <div className="flex items-center bg-hardware-bg border border-hardware-border rounded p-1 gap-1">
+                    {(['Cube', 'Sphere', 'Cylinder', 'Plane'] as const).map((type) => (
+                      <button
+                        key={type}
+                        onClick={() => setPreviewGeometry(type)}
+                        className={`p-1.5 rounded transition-colors ${previewGeometry === type ? 'bg-hardware-accent text-white' : 'text-hardware-muted hover:text-hardware-text'}`}
+                        title={type}
+                      >
+                        {type === 'Cube' && <Box size={14} />}
+                        {type === 'Sphere' && <Circle size={14} />}
+                        {type === 'Cylinder' && <Cylinder size={14} />}
+                        {type === 'Plane' && <Square size={14} />}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <span className="text-[9px] font-mono text-hardware-muted uppercase">Auto-Rotate</span>
+                    <button 
+                      onClick={() => setAutoRotate(!autoRotate)}
+                      className={`w-7 h-3.5 rounded-full transition-colors relative ${autoRotate ? 'bg-hardware-accent' : 'bg-hardware-border'}`}
+                    >
+                      <motion.div 
+                        animate={{ x: autoRotate ? 15 : 2 }}
+                        className="w-2.5 h-2.5 bg-white rounded-full absolute top-0.5"
+                      />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex-1 flex gap-4 min-h-0">
+                <div className="flex-1 relative group">
+                  <Preview3D 
+                    maps={{
+                      albedo: previews.Albedo || null,
+                      normal: previews.Normal || null,
+                      roughness: previews.Roughness || null,
+                      displacement: previews.Displacement || null
+                    }}
+                    geometryType={previewGeometry}
+                    tiling={textureTiling}
+                    rotation={textureRotation}
+                    zoom={cameraZoom}
+                    autoRotate={autoRotate}
+                    viewMode={viewMode}
+                  />
+                  <div className="absolute top-2 left-2 bg-black/60 backdrop-blur-md px-2 py-1 rounded border border-white/10 pointer-events-none">
+                    <span className="text-[8px] font-mono text-white/80 uppercase tracking-widest">Real-time PBR Engine</span>
+                  </div>
+                </div>
+
+                <div className="w-64 flex flex-col gap-4 overflow-y-auto pr-1">
+                  <div className="space-y-4 p-3 bg-hardware-bg/50 rounded border border-hardware-border">
+                    <div className="flex items-center gap-2 mb-1">
+                      <Settings2 size={12} className="text-hardware-accent" />
+                      <span className="text-[9px] font-bold uppercase tracking-wider">View Controls</span>
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-[9px] text-hardware-muted uppercase font-mono flex items-center gap-1">
+                          <ZoomIn size={10} /> Camera Zoom
+                        </label>
+                        <span className="text-[9px] font-mono">{cameraZoom.toFixed(1)}x</span>
+                      </div>
+                      <input 
+                        type="range" 
+                        min="0.5" 
+                        max="3" 
+                        step="0.1"
+                        value={cameraZoom}
+                        onChange={(e) => setCameraZoom(parseFloat(e.target.value))}
+                        className="hardware-slider h-1"
+                      />
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-[9px] text-hardware-muted uppercase font-mono flex items-center gap-1">
+                          <Layers size={10} /> Texture Tiling
+                        </label>
+                        <span className="text-[9px] font-mono">{textureTiling}x</span>
+                      </div>
+                      <input 
+                        type="range" 
+                        min="1" 
+                        max="10" 
+                        step="1"
+                        value={textureTiling}
+                        onChange={(e) => setTextureTiling(parseInt(e.target.value))}
+                        className="hardware-slider h-1"
+                      />
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-[9px] text-hardware-muted uppercase font-mono flex items-center gap-1">
+                          <RotateCw size={10} /> Texture Rotation
+                        </label>
+                        <span className="text-[9px] font-mono">{textureRotation}°</span>
+                      </div>
+                      <input 
+                        type="range" 
+                        min="-180" 
+                        max="180" 
+                        step="1"
+                        value={textureRotation}
+                        onChange={(e) => setTextureRotation(parseInt(e.target.value))}
+                        className="hardware-slider h-1"
+                      />
+                    </div>
+
+                    <div className="pt-2 border-t border-hardware-border">
+                      <div className="flex items-center gap-1.5">
+                        <Sun size={10} className="text-hardware-accent" />
+                        <span className="text-[8px] font-bold uppercase text-hardware-accent">Studio Lighting Active</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div className="flex-1 overflow-y-auto">
+            {!baseImage ? (
             <div 
               onClick={() => fileInputRef.current?.click()}
               className="hardware-panel h-full flex flex-col items-center justify-center border-dashed border-2 cursor-pointer hover:border-hardware-accent hover:bg-hardware-accent/5 transition-all group"
@@ -699,10 +910,33 @@ export default function App() {
           ) : (
             <div className="grid grid-cols-2 gap-4">
               {activeMaps.map((type) => (
-                <div key={type} className="hardware-panel flex flex-col overflow-hidden">
-                  <div className="px-3 py-2 border-b border-hardware-border flex items-center justify-between bg-hardware-card/80">
+                <div 
+                  key={type} 
+                  className={`hardware-panel flex flex-col overflow-hidden transition-all cursor-pointer group/panel ${
+                    viewMode === type 
+                      ? 'ring-2 ring-hardware-accent border-hardware-accent glow-accent' 
+                      : 'border-hardware-accent/40 shadow-[0_0_10px_rgba(var(--hardware-accent-rgb),0.1)]'
+                  }`}
+                  onClick={() => {
+                    if (['Albedo', 'Normal', 'Roughness', 'Displacement'].includes(type)) {
+                      setViewMode(type as ViewMode);
+                      if (!show3D) setShow3D(true);
+                    }
+                  }}
+                >
+                  <div className={`px-3 py-2 border-b border-hardware-border flex items-center justify-between bg-hardware-card/80 ${viewMode === type ? 'bg-hardware-accent/5' : ''}`}>
                     <div className="flex items-center gap-2">
-                      <span className="text-[10px] font-bold uppercase tracking-widest text-hardware-accent">{type} Map</span>
+                      <span 
+                        className={`text-[10px] font-bold uppercase tracking-widest hover:underline cursor-zoom-in ${
+                          viewMode === type ? 'text-hardware-accent glow-text' : 'text-hardware-accent/80'
+                        }`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setLightboxMap(type);
+                        }}
+                      >
+                        {type} Map
+                      </span>
                       {['AO', 'Glossiness', 'Reflections', 'Self-Illumination', 'Cutout'].includes(type) && (
                         <button 
                           onClick={() => toggleMap(type)}
@@ -751,16 +985,30 @@ export default function App() {
                   
                   <div className="flex flex-1 min-h-0">
                     {/* Map Preview */}
-                    <div className="w-1/2 aspect-square bg-black/20 flex items-center justify-center p-2 border-r border-hardware-border">
-                      {previews[type] ? (
-                        <img 
-                          src={previews[type]} 
-                          alt={type} 
-                          className="max-h-full max-w-full object-contain"
-                          referrerPolicy="no-referrer"
-                        />
+                    <div 
+                      className="w-1/2 aspect-square bg-black/20 flex items-center justify-center p-2 border-r border-hardware-border relative group/img cursor-zoom-in"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setLightboxMap(type);
+                      }}
+                    >
+                      {previews[type] && !processingMaps.has(type) ? (
+                        <>
+                          <img 
+                            src={previews[type]} 
+                            alt={type} 
+                            className="max-h-full max-w-full object-contain transition-transform group-hover/img:scale-105"
+                            referrerPolicy="no-referrer"
+                          />
+                          <div className="absolute inset-0 bg-hardware-accent/10 opacity-0 group-hover/img:opacity-100 transition-opacity flex items-center justify-center">
+                            <Maximize2 size={20} className="text-white drop-shadow-lg" />
+                          </div>
+                        </>
                       ) : (
-                        <RefreshCw className="animate-spin text-hardware-muted" size={16} />
+                        <div className="flex flex-col items-center gap-2">
+                          <RefreshCw className="animate-spin text-hardware-accent" size={20} />
+                          <span className="text-[8px] font-mono text-hardware-muted uppercase animate-pulse">Processing...</span>
+                        </div>
                       )}
                     </div>
 
@@ -815,7 +1063,8 @@ export default function App() {
             </div>
           )}
         </div>
-      </main>
+      </div>
+    </main>
 
       <input 
         type="file" 
@@ -827,6 +1076,21 @@ export default function App() {
 
       {/* Tiled Preview Modal */}
       <AnimatePresence>
+        {lightboxMap && (
+          <MapLightbox
+            isOpen={!!lightboxMap}
+            onClose={() => setLightboxMap(null)}
+            mapName={`${lightboxMap} Map`}
+            mapUrl={previews[lightboxMap]}
+            originalUrl={previews.Albedo}
+            onDownload={() => {
+              const link = document.createElement('a');
+              link.download = `${originalFileName}_${lightboxMap.toLowerCase()}.png`;
+              link.href = previews[lightboxMap];
+              link.click();
+            }}
+          />
+        )}
         {showTiledPreview && (
           <motion.div 
             initial={{ opacity: 0 }}
